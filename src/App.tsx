@@ -5,6 +5,7 @@ import { CreateCollection } from './components/CreateCollection';
 import { MintNFT } from './components/MintNFT';
 import { Collections } from './components/Collections';
 import { Launchpad } from './components/Launchpad';
+import { UserCollections } from './components/UserCollections';
 
 function App() {
   const [activeTab, setActiveTab] = useState('home');
@@ -18,7 +19,7 @@ function App() {
       case 'create':
         return <CreateCollection />;
       case 'mint':
-        return <MintNFT />;
+        return <UserCollections />;
       case 'launchpad':
         return <Launchpad />;
       default:

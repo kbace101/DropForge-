@@ -3,9 +3,8 @@ import { motion } from 'framer-motion';
 import { useSignAndExecuteTransaction, useSuiClient, useCurrentAccount } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
 import { useNetworkVariable } from '../config/sui';
-import { Loader2, CheckCircle2 } from 'lucide-react';
-
-const toUtf8Bytes = (str: string): number[] => Array.from(new TextEncoder().encode(str));
+import { uploadToWalrus } from '../config/walrus';
+import { Loader2, CheckCircle2, Upload, Image as ImageIcon } from 'lucide-react';
 
 export function CreateCollection() {
   const account = useCurrentAccount();
@@ -14,42 +13,73 @@ export function CreateCollection() {
     description: '',
     maxSupply: '',
     royaltyBps: '',
-    baseUri: '',
     mintPrice: '',
   });
+  const [images, setImages] = useState<File[]>([]);
+  const [previews, setPreviews] = useState<string[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [collectionId, setCollectionId] = useState<string>('');
 
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
   const suiClient = useSuiClient();
   const packageId = useNetworkVariable('dropforgePackageId');
   const registryId = useNetworkVariable('dropforgeRegistryId');
 
+  // Handle multiple images
+  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    setImages(files);
+
+    const urls = files.map(file => URL.createObjectURL(file));
+    setPreviews(urls);
+  };
+
+  const handleUploadAllToWalrus = async (): Promise<string> => {
+    setIsUploading(true);
+    try {
+      // Upload all images to Walrus
+      const blobUrls: string[] = [];
+      for (const file of images) {
+        const blobId = await uploadToWalrus(file);
+        blobUrls.push(`https://aggregator.walrus-testnet.walrus.space/v1/${blobId}`);
+      }
+
+      // Create JSON manifest with all URLs
+      const manifest = JSON.stringify(blobUrls, null, 2);
+      const manifestBlobId = await uploadToWalrus(new File([manifest], 'manifest.json', { type: 'application/json' }));
+      return `https://aggregator.walrus-testnet.walrus.space/v1/${manifestBlobId}`;
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!account) return alert('Connect wallet');
     if (!registryId) return alert('Registry not loaded');
 
-    // Validate inputs
-    if (!formData.name.trim()) return alert('Name is required');
-    if (!formData.maxSupply || Number(formData.maxSupply) <= 0) return alert('Max supply must be > 0');
-    if (Number(formData.royaltyBps) > 10000) return alert('Royalty max 10000 bps');
+    if (!images.length) return alert('Upload at least 1 image');
 
     setIsCreating(true);
     setSuccess(false);
 
     try {
-      const tx = new Transaction();
+      // Step 1: Upload all images + generate base URI
+      const baseUri = await handleUploadAllToWalrus();
 
+      // Step 2: Create collection
+      const tx = new Transaction();
       tx.moveCall({
         target: `${packageId}::dropforge::create_collection`,
         arguments: [
           tx.object(registryId),
-          tx.pure.vector('u8', toUtf8Bytes(formData.name)),
-          tx.pure.vector('u8', toUtf8Bytes(formData.description)),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode(formData.name))),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode(formData.description))),
           tx.pure.u64(BigInt(formData.maxSupply)),
           tx.pure.u16(Number(formData.royaltyBps)),
-          tx.pure.vector('u8', toUtf8Bytes(formData.baseUri)),
+          tx.pure.vector('u8', Array.from(new TextEncoder().encode(baseUri))),
           tx.pure.u64(BigInt(formData.mintPrice)),
         ],
       });
@@ -60,14 +90,16 @@ export function CreateCollection() {
           onSuccess: async (result) => {
             await suiClient.waitForTransaction({ digest: result.digest });
             setSuccess(true);
-            setFormData({
-              name: '', description: '', maxSupply: '', royaltyBps: '', baseUri: '', mintPrice: '',
-            });
+            // You could extract collectionId from events if needed
+            alert(`Collection created! Base URI: ${baseUri}`);
+            setFormData({ name: '', description: '', maxSupply: '', royaltyBps: '', mintPrice: '' });
+            setImages([]);
+            setPreviews([]);
             setTimeout(() => setSuccess(false), 3000);
           },
           onError: (err) => {
             console.error(err);
-            alert('Failed: ' + (err.message || 'Try again'));
+            alert('Failed to create collection: ' + (err.message || 'Try again'));
           },
         }
       );
@@ -91,105 +123,94 @@ export function CreateCollection() {
             Create Collection
           </h2>
           <p className="text-gray-600 mb-8">
-            Launch your NFT collection on Sui Testnet
+            Upload images and automatically create NFT collection
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-6">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-2">
-                Collection Name
+                Upload Images
               </label>
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                onChange={handleImageChange}
+                className="w-full"
+              />
+              {previews.length > 0 && (
+                <div className="flex flex-wrap gap-2 mt-2">
+                  {previews.map((src, i) => (
+                    <img key={i} src={src} className="w-24 h-24 object-cover rounded-lg" />
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Rest of the form: Name, Description, Max Supply, Royalty, Mint Price */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Collection Name</label>
               <input
                 type="text"
                 required
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all outline-none"
-                placeholder="My Amazing Collection"
+                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
               />
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Description
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Description</label>
               <textarea
                 required
                 value={formData.description}
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all outline-none resize-none"
-                rows={4}
-                placeholder="Describe your collection..."
+                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
               />
             </div>
 
             <div className="grid md:grid-cols-2 gap-6">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Max Supply
-                </label>
+                <label>Max Supply</label>
                 <input
                   type="number"
                   required
                   value={formData.maxSupply}
                   onChange={(e) => setFormData({ ...formData, maxSupply: e.target.value })}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all outline-none"
-                  placeholder="10000"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
                 />
               </div>
 
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Royalty (basis points, max 10000)
-                </label>
+                <label>Royalty BPS</label>
                 <input
                   type="number"
                   required
-                  min="0"
-                  max="10000"
+                  max={10000}
                   value={formData.royaltyBps}
                   onChange={(e) => setFormData({ ...formData, royaltyBps: e.target.value })}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all outline-none"
-                  placeholder="500"
+                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
                 />
               </div>
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Base URI
-              </label>
-              <input
-                type="url"
-                required
-                value={formData.baseUri}
-                onChange={(e) => setFormData({ ...formData, baseUri: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all outline-none"
-                placeholder="https://yourdomain.com/metadata/"
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Mint Price (MIST)
-              </label>
+              <label>Mint Price (MIST)</label>
               <input
                 type="number"
                 required
                 value={formData.mintPrice}
                 onChange={(e) => setFormData({ ...formData, mintPrice: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 transition-all outline-none"
-                placeholder="1000000000"
+                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
               />
-              <p className="text-xs text-gray-500 mt-1">1 SUI = 1,000,000,000 MIST</p>
             </div>
 
             <button
               type="submit"
-              disabled={isCreating || !account}
-              className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-4 rounded-xl font-medium hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+              disabled={isCreating || isUploading || !images.length}
+              className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white py-4 rounded-xl font-medium flex items-center justify-center gap-2"
             >
-              {isCreating ? (
+              {isCreating || isUploading ? (
                 <>
                   <Loader2 className="w-5 h-5 animate-spin" />
                   Creating Collection...
@@ -200,7 +221,7 @@ export function CreateCollection() {
                   Collection Created!
                 </>
               ) : (
-                'Create Collection'
+                'Upload & Create Collection'
               )}
             </button>
           </form>

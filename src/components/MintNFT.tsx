@@ -1,304 +1,164 @@
-import { useState } from 'react';
-import { motion } from 'framer-motion';
-import { useSignAndExecuteTransaction, useSuiClient } from '@mysten/dapp-kit';
+import { useState, useEffect } from 'react';
+import { useSuiClient, useSignAndExecuteTransaction } from '@mysten/dapp-kit';
 import { Transaction } from '@mysten/sui/transactions';
+import { Loader2, CheckCircle2, Copy } from 'lucide-react';
+import { QRCodeSVG } from 'qrcode.react';
 import { useNetworkVariable } from '../config/sui';
-import { uploadToWalrus, getWalrusUrl } from '../config/walrus';
-import { Loader2, CheckCircle2, Upload, Image as ImageIcon } from 'lucide-react';
 
-export function MintNFT() {
-  const [formData, setFormData] = useState({
-    collectionId: '',
-    name: '',
-    description: '',
-    recipient: '',
-    mintPrice: '',
-  });
-  const [imageFile, setImageFile] = useState<File | null>(null);
-  const [imagePreview, setImagePreview] = useState<string>('');
-  const [isUploading, setIsUploading] = useState(false);
+type MoveValue =
+  | string
+  | number
+  | boolean
+  | MoveValue[]
+  | { fields: { [key: string]: MoveValue }; type: string }
+  | { [key: string]: MoveValue }
+  | { id: string }
+  | any;
+
+type NFTItem = {
+  name: string;
+  description: string;
+  imageUrl: string;
+  minted: boolean;
+};
+
+// Helper to safely get a field from a MoveValue object
+function getField(obj: MoveValue | undefined, fieldName: string): MoveValue | undefined {
+  if (typeof obj === 'object' && obj !== null && 'fields' in obj) {
+    const fieldsObj = (obj as { fields: { [key: string]: MoveValue } }).fields;
+    return fieldsObj[fieldName];
+  }
+  return undefined;
+}
+
+// Helper to decode u8 vector or string field
+function decodeMoveValue(value: MoveValue | undefined): string | null {
+  if (!value) return null;
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value)) return new TextDecoder().decode(new Uint8Array(value as number[]));
+  return null;
+}
+
+export function MintNFT({ collectionId }: { collectionId: string }) {
+  const packageId = useNetworkVariable('dropforgePackageId');
+  const [nfts, setNFTs] = useState<NFTItem[]>([]);
   const [isMinting, setIsMinting] = useState(false);
-  const [success, setSuccess] = useState(false);
-  const [blobId, setBlobId] = useState<string>('');
+  const [successIndex, setSuccessIndex] = useState<number | null>(null);
 
   const { mutate: signAndExecute } = useSignAndExecuteTransaction();
   const suiClient = useSuiClient();
-  const packageId = useNetworkVariable('dropforgePackageId');
+  const mintPageUrl = `${window.location.origin}/mint/${collectionId}`;
 
-  const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setImageFile(file);
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setImagePreview(reader.result as string);
-      };
-      reader.readAsDataURL(file);
-    }
-  };
+  useEffect(() => {
+    if (!collectionId) return;
 
-  const handleUploadToWalrus = async () => {
-    if (!imageFile) return;
+    const fetchNFTs = async () => {
+      try {
+        const collectionObj = await suiClient.getObject({ id: collectionId });
 
-    setIsUploading(true);
-    try {
-      const blobIdResult = await uploadToWalrus(imageFile);
-      setBlobId(blobIdResult);
-      alert(`Image uploaded to Walrus! Blob ID: ${blobIdResult}`);
-    } catch (error) {
-      console.error('Upload failed:', error);
-      alert('Failed to upload image to Walrus');
-    } finally {
-      setIsUploading(false);
-    }
-  };
+        // Use helper to safely get base_uri
+        const baseUriMoveValue = getField(collectionObj?.data?.content, 'base_uri');
+        const baseUri = decodeMoveValue(baseUriMoveValue);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
+        if (!baseUri) return;
 
-    // if (!blobId) {
-    //   alert('Please upload image to Walrus first');
-    //   return;
-    // }
+        const manifestRes = await fetch(baseUri);
+        const imageUrls: string[] = await manifestRes.json();
 
+        const nftsPrepared: NFTItem[] = imageUrls.map((url, idx) => ({
+          name: `NFT #${idx + 1}`,
+          description: `Auto-generated NFT #${idx + 1}`,
+          imageUrl: url,
+          minted: false, // TODO: check on-chain mint status
+        }));
+
+        setNFTs(nftsPrepared);
+      } catch (err) {
+        console.error('Failed to fetch NFTs:', err);
+      }
+    };
+
+    fetchNFTs();
+  }, [collectionId, suiClient]);
+
+  const handleMint = async (idx: number) => {
     setIsMinting(true);
-    setSuccess(false);
+    setSuccessIndex(null);
 
     try {
-      const imageUrl = getWalrusUrl(blobId);
+      const nft = nfts[idx];
       const tx = new Transaction();
-
-      const [coin] = tx.splitCoins(tx.gas, [parseInt(formData.mintPrice)]);
+      const [coin] = tx.splitCoins(tx.gas, [1_000_000_000]); // replace with real mint price
 
       tx.moveCall({
         target: `${packageId}::dropforge::mint_nft`,
         arguments: [
-          tx.object(formData.collectionId),
-          tx.pure.string(formData.name),
-          tx.pure.string(formData.description),
-          tx.pure.string(imageUrl),
+          tx.object(collectionId),
+          tx.pure.string(nft.name),
+          tx.pure.string(nft.description),
+          tx.pure.string(nft.imageUrl),
           coin,
-          tx.pure.address(formData.recipient),
+          tx.pure.address('0xRECIPIENT_ADDRESS_HERE'),
         ],
       });
 
-      signAndExecute(
-        {
-          transaction: tx,
+      signAndExecute({ transaction: tx }, {
+        onSuccess: async (res) => {
+          await suiClient.waitForTransaction({ digest: res.digest });
+          const newNFTs = [...nfts];
+          newNFTs[idx].minted = true;
+          setNFTs(newNFTs);
+          setSuccessIndex(idx);
+          setTimeout(() => setSuccessIndex(null), 3000);
         },
-        {
-          onSuccess: async (result) => {
-            await suiClient.waitForTransaction({
-              digest: result.digest,
-            });
-            setSuccess(true);
-            setFormData({
-              collectionId: '',
-              name: '',
-              description: '',
-              recipient: '',
-              mintPrice: '',
-            });
-            setImageFile(null);
-            setImagePreview('');
-            setBlobId('');
-            setTimeout(() => setSuccess(false), 3000);
-          },
-          onError: (error) => {
-            console.error('Transaction failed:', error);
-            alert('Failed to mint NFT');
-          },
-        }
-      );
-    } catch (error) {
-      console.error('Error:', error);
-      alert('Failed to mint NFT');
+        onError: (err) => alert('Mint failed: ' + err.message),
+      });
+    } catch (err) {
+      console.error(err);
+      alert('Error minting NFT');
     } finally {
       setIsMinting(false);
     }
   };
 
   return (
-    <div className="min-h-screen pt-32 pb-20 bg-gradient-to-br from-cyan-50 to-white">
-      <div className="max-w-4xl mx-auto px-6">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-white rounded-3xl shadow-xl p-10"
+    <div className="space-y-8">
+      <div className="flex flex-col items-center">
+        <QRCodeSVG value={mintPageUrl} size={128} />
+        <button
+          onClick={() => navigator.clipboard.writeText(mintPageUrl)}
+          className="mt-3 px-4 py-2 bg-cyan-500 text-white rounded-xl"
         >
-          <h2 className="text-4xl font-bold mb-3 bg-gradient-to-r from-cyan-600 to-blue-600 bg-clip-text text-transparent">
-            Mint NFT
-          </h2>
-          <p className="text-gray-600 mb-8">
-            Upload image to Walrus and mint your NFT
-          </p>
+          <Copy className="w-4 h-4" /> Copy Mint URL
+        </button>
+      </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Image Upload
-              </label>
-              <div className="border-2 border-dashed border-gray-300 rounded-xl p-8 text-center hover:border-cyan-500 transition-colors">
-                {imagePreview ? (
-                  <div className="relative">
-                    <img
-                      src={imagePreview}
-                      alt="Preview"
-                      className="max-h-64 mx-auto rounded-lg"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setImageFile(null);
-                        setImagePreview('');
-                        setBlobId('');
-                      }}
-                      className="absolute top-2 right-2 bg-red-500 text-white px-3 py-1 rounded-lg text-sm"
-                    >
-                      Remove
-                    </button>
-                  </div>
-                ) : (
-                  <label className="cursor-pointer">
-                    <ImageIcon className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-                    <p className="text-gray-600 mb-2">Click to upload image</p>
-                    <p className="text-sm text-gray-400">PNG, JPG, GIF up to 10MB</p>
-                    <input
-                      type="file"
-                      accept="image/*"
-                      onChange={handleImageChange}
-                      className="hidden"
-                    />
-                  </label>
-                )}
-              </div>
+      <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-6">
+        {nfts.map((nft, idx) => (
+          <div key={idx} className="bg-gray-50 rounded-xl p-4 flex flex-col items-center">
+            <img src={nft.imageUrl} className="h-48 w-full object-cover rounded-lg mb-4" />
+            <h3 className="font-medium mb-1">{nft.name}</h3>
+            <p className="text-sm text-gray-500 mb-4">{nft.description}</p>
 
-              {imageFile && !blobId && (
-                <button
-                  type="button"
-                  onClick={handleUploadToWalrus}
-                  disabled={isUploading}
-                  className="mt-4 w-full bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-3 rounded-xl font-medium hover:shadow-lg transition-all disabled:opacity-50 flex items-center justify-center gap-2"
-                >
-                  {isUploading ? (
-                    <>
-                      <Loader2 className="w-5 h-5 animate-spin" />
-                      Uploading to Walrus...
-                    </>
-                  ) : (
-                    <>
-                      <Upload className="w-5 h-5" />
-                      Upload to Walrus
-                    </>
-                  )}
-                </button>
-              )}
-
-              {blobId && (
-                <div className="mt-4 p-4 bg-green-50 rounded-xl">
-                  <p className="text-sm text-green-800">
-                    ✓ Image uploaded to Walrus
-                  </p>
-                  <p className="text-xs text-green-600 mt-1 break-all">
-                    Blob ID: {blobId}
-                  </p>
-                </div>
-              )}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Collection ID
-              </label>
-              <input
-                type="text"
-                required
-                value={formData.collectionId}
-                onChange={(e) => setFormData({ ...formData, collectionId: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 transition-all outline-none"
-                placeholder="0x..."
-              />
-            </div>
-
-            <div className="grid md:grid-cols-2 gap-6">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  NFT Name
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 transition-all outline-none"
-                  placeholder="Cool NFT #1"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Recipient Address
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={formData.recipient}
-                  onChange={(e) => setFormData({ ...formData, recipient: e.target.value })}
-                  className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 transition-all outline-none"
-                  placeholder="0x..."
-                />
-              </div>
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Description
-              </label>
-              <textarea
-                required
-                value={formData.description}
-                onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 transition-all outline-none resize-none"
-                rows={3}
-                placeholder="Describe your NFT..."
-              />
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Mint Price (MIST)
-              </label>
-              <input
-                type="number"
-                required
-                value={formData.mintPrice}
-                onChange={(e) => setFormData({ ...formData, mintPrice: e.target.value })}
-                className="w-full px-4 py-3 rounded-xl border border-gray-300 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-200 transition-all outline-none"
-                placeholder="1000000000"
-              />
-            </div>
-
-            <button
-              type="submit"
-              // disabled={isMinting || !blobId}
-              className="w-full bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-4 rounded-xl font-medium hover:shadow-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {isMinting ? (
-                <>
+            {!nft.minted ? (
+              <button
+                disabled={isMinting}
+                onClick={() => handleMint(idx)}
+                className="w-full bg-gradient-to-r from-cyan-500 to-blue-500 text-white py-2 rounded-xl font-medium flex items-center justify-center gap-2"
+              >
+                {isMinting && successIndex !== idx ? (
                   <Loader2 className="w-5 h-5 animate-spin" />
-                  Minting NFT...
-                </>
-              ) : success ? (
-                <>
+                ) : successIndex === idx ? (
                   <CheckCircle2 className="w-5 h-5" />
-                  NFT Minted!
-                </>
-              ) : (
-                'Mint NFT'
-              )}
-            </button>
-          </form>
-        </motion.div>
+                ) : (
+                  'Mint'
+                )}
+              </button>
+            ) : (
+              <span className="text-green-600 font-semibold">Minted ✅</span>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );

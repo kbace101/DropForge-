@@ -1,55 +1,116 @@
-import { SuiJsonRpcClient } from '@mysten/sui/jsonRpc';
-import { getFullnodeUrl } from '@mysten/sui/client';
-import { walrus, WalrusFile } from '@mysten/walrus';
-import { fromBase64 } from '@mysten/sui/utils';
-import { Ed25519Keypair } from '@mysten/sui/keypairs/ed25519';
-import walrusWasmUrl from '@mysten/walrus-wasm/web/walrus_wasm_bg.wasm?url';
+// const PUBLISHER_URL = "https://publisher.walrus-testnet.walrus.space";
+// const AGGREGATOR_URL = "https://aggregator.walrus-testnet.walrus.space";
 
-const client = new SuiJsonRpcClient({
-  url: getFullnodeUrl('testnet'),
-  network: 'testnet',
-}).$extend(
-  walrus({
-    uploadRelay: {
-      host: 'https://publisher.walrus-testnet.walrus.space',
-      sendTip: { max: 105 }, // ← THIS FIXES EVERYTHING
-    },
-    wasmUrl: walrusWasmUrl,
-    storageNodeClientOptions: {
-      timeout: 60_000,
-    }
-  }),
-);
+export async function uploadToWalrus(file: File | Blob): Promise<string> {
+  const endpoint = `https://publisher.walrus-testnet.walrus.space/v1/blobs?epochs=5`;
 
-export async function uploadToWalrus(file: File): Promise<string> {
-  const arrayBuffer = await file.arrayBuffer();
-  const uint8Array = new Uint8Array(arrayBuffer);
-
-  const walrusFile = WalrusFile.from({
-    contents: uint8Array,
-    identifier: file.name,
-    tags: {
-      'content-type': file.type || 'application/octet-stream',
-    },
+  const res = await fetch(endpoint, {
+    method: "PUT",
+    body: file,
   });
 
-  const PRIVATE_KEY = import.meta.env.VITE_SUI_PRIVATE_KEY;
-  if (!PRIVATE_KEY) throw new Error('VITE_SUI_PRIVATE_KEY missing in .env');
+  const text = await res.text();
+  console.log("Walrus response:", text);
 
-  const decodedKey = fromBase64(PRIVATE_KEY);
-  const secretKey32 = decodedKey.length > 32 ? decodedKey.slice(0, 32) : decodedKey;
-  const keypair = Ed25519Keypair.fromSecretKey(secretKey32);
+  if (!res.ok) {
+    throw new Error(`Upload failed: ${text}`);
+  }
 
-  const results = await client.walrus.writeFiles({
-    files: [walrusFile],
-    epochs: 1,
-    deletable: true,
-    signer: keypair,
-  });
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid JSON returned from Walrus");
+  }
 
-  return results[0].blobId;
+  // Correct path
+  const blobId =
+    data?.newlyCreated?.blobObject?.blobId ||
+    data?.blobObject?.blobId ||
+    data?.blobId;
+
+  if (!blobId) {
+    throw new Error("blobId missing in Walrus response");
+  }
+
+  return blobId;
 }
 
 export function getWalrusUrl(blobId: string): string {
-  return `https://aggregator.walrus-testnet.walrus.space/v1/${blobId}`;
+  return `https://aggregator.walrus-testnet.walrus.space/v1/blobs/${blobId}`;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// // Simple Walrus HTTP client — no WAL tokens required.
+
+// const PUBLISHER_URL = "https://publisher.walrus-testnet.walrus.space";
+// const AGGREGATOR_URL = "https://aggregator.walrus-testnet.walrus.space";
+
+// export async function uploadToWalrus(
+//   file: File | Blob,
+//   epochs: number = 5
+// ): Promise<{ blobId: string; objectId: string }> {
+//   const endpoint = `${PUBLISHER_URL}/v1/blobs?epochs=${epochs}`;
+
+//   const res = await fetch(endpoint, {
+//     method: "PUT",
+//     body: file,
+//   });
+
+//   if (!res.ok) {
+//     const errorText = await res.text();
+//     throw new Error(`Upload failed: ${errorText}`);
+//   }
+
+//   const data = await res.json();
+//   return {
+//     blobId: data.blobObject.blobId,
+//     objectId: data.blobObject.objectId,
+//   };
+// }
+
+// export async function fetchFromWalrus(blobId: string): Promise<Blob> {
+//   const res = await fetch(`${AGGREGATOR_URL}/v1/blobs/${blobId}`);
+//   if (!res.ok) {
+//     throw new Error(`Failed to fetch blob: ${res.statusText}`);
+//   }
+//   return await res.blob();
+// }
+
+// export async function getTextFromWalrus(blobId: string): Promise<string> {
+//   const blob = await fetchFromWalrus(blobId);
+//   return await blob.text();
+// }
