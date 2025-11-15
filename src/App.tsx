@@ -1,37 +1,27 @@
-import { useState } from 'react';
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import { Navigation } from './components/Navigation';
 import { Hero } from './components/Hero';
 import { CreateCollection } from './components/CreateCollection';
-import { MintNFT } from './components/MintNFT';
 import { Collections } from './components/Collections';
 import { Launchpad } from './components/Launchpad';
 import { UserCollections } from './components/UserCollections';
+import { MintPage } from './pages/MintPage';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('home');
-
-  const renderContent = () => {
-    switch (activeTab) {
-      case 'home':
-        return <Hero onNavigate={setActiveTab} />;
-      case 'collections':
-        return <Collections />;
-      case 'create':
-        return <CreateCollection />;
-      case 'mint':
-        return <UserCollections />;
-      case 'launchpad':
-        return <Launchpad />;
-      default:
-        return <Hero onNavigate={setActiveTab} />;
-    }
-  };
-
   return (
-    <div className="min-h-screen bg-white">
-      <Navigation activeTab={activeTab} setActiveTab={setActiveTab} />
-      {renderContent()}
-    </div>
+    <Router>
+      <div className="min-h-screen bg-white">
+        <Navigation />
+        <Routes>
+          <Route path="/" element={<Hero />} />
+          <Route path="/collections" element={<Collections />} />
+          <Route path="/create" element={<CreateCollection />} />
+          <Route path="/mint" element={<UserCollections />} />
+          <Route path="/mint/:collectionId" element={<MintPage />} />
+          <Route path="/launchpad" element={<Launchpad />} />
+        </Routes>
+      </div>
+    </Router>
   );
 }
 

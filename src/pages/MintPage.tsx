@@ -1,35 +1,27 @@
 import { motion } from 'framer-motion';
 import { useCurrentAccount, useSuiClient } from '@mysten/dapp-kit';
 import { useNetworkVariable } from '../config/sui';
-import { Loader2, ExternalLink, Copy, Eye, Share2 } from 'lucide-react';
+import { Loader2, Eye } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { ShareMintModal } from './ShareMintModal';
 
 type CollectionData = {
   objectId: string;
   name: string;
   description: string;
-  creator: string;
   maxSupply: number;
   mintedCount: number;
-  royaltyBps: number;
-  baseUri: string;
   mintPrice: string;
   previewImage?: string;
 };
 
-export function Collections() {
-  const packageId = useNetworkVariable('dropforgePackageId');
+export function MintPage() {
   const registryId = useNetworkVariable('dropforgeRegistryId');
   const account = useCurrentAccount();
   const suiClient = useSuiClient();
 
   const [collections, setCollections] = useState<CollectionData[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
-  const [shareModalOpen, setShareModalOpen] = useState(false);
-  const [selectedCollection, setSelectedCollection] = useState<CollectionData | null>(null);
 
   // Helper to decode u8 vector to string
   const decodeU8Vector = (vec: number[] | undefined): string => {
@@ -59,8 +51,10 @@ export function Collections() {
           return;
         }
 
-        // Get user_collections table - handle different Sui table formats
+        // Get user_collections table
         const userCollectionsTableId = registryContent.user_collections?.fields?.id?.id;
+        
+        console.log('User Collections Table ID:', userCollectionsTableId);
         
         if (!userCollectionsTableId) {
           console.log('No user collections table found');
@@ -68,27 +62,30 @@ export function Collections() {
           return;
         }
 
-        // Fetch the dynamic fields of the table to get user's collections
+        // Fetch the dynamic fields of the table
         const dynamicFields = await suiClient.getDynamicFields({
           parentId: userCollectionsTableId,
         });
 
-        console.log('Dynamic Fields:', dynamicFields);
+        console.log('Dynamic Fields Response:', dynamicFields);
 
-        // Find the field that matches the current user's address
+        // Find the field for current user
         const userField = dynamicFields.data.find(
-          (field: any) => field.name?.value === account.address
+          (field: any) => {
+            const nameValue = field.name?.value;
+            return nameValue === account.address || nameValue?.toLowerCase() === account.address.toLowerCase();
+          }
         );
 
-        console.log('User Field:', userField);
+        console.log('User Field Found:', userField);
 
         if (!userField) {
-          console.log('No collections found for user');
+          console.log('No collections found for user address:', account.address);
           setIsLoading(false);
           return;
         }
 
-        // Fetch the actual value of this dynamic field
+        // Fetch the user's collections
         const userCollectionsObj = await suiClient.getObject({
           id: userField.objectId,
           options: { showContent: true },
@@ -97,15 +94,20 @@ export function Collections() {
         console.log('User Collections Object:', userCollectionsObj);
 
         const userCollectionsContent = (userCollectionsObj?.data?.content as any)?.fields;
-        const collectionIds = userCollectionsContent?.value as string[];
+        let collectionIds = userCollectionsContent?.value;
 
-        if (!collectionIds || collectionIds.length === 0) {
+        // Handle if value is wrapped
+        if (!Array.isArray(collectionIds)) {
+          collectionIds = collectionIds?.fields?.value || collectionIds?.value || [];
+        }
+
+        console.log('Collection IDs:', collectionIds);
+
+        if (!collectionIds || !Array.isArray(collectionIds) || collectionIds.length === 0) {
           console.log('No collection IDs found');
           setIsLoading(false);
           return;
         }
-
-        console.log('Collection IDs:', collectionIds);
 
         // Fetch each collection
         const collectionPromises = collectionIds.map(async (collectionId) => {
@@ -124,10 +126,16 @@ export function Collections() {
             // Fetch first image from manifest
             if (baseUri) {
               try {
-                const manifestRes = await fetch(baseUri);
-                const imageUrls: string[] = await manifestRes.json();
-                if (imageUrls.length > 0) {
-                  previewImage = imageUrls[0];
+                let manifestUrl = baseUri;
+                if (!manifestUrl.startsWith('http')) {
+                  manifestUrl = `https://aggregator.walrus-testnet.walrus.space/v1/blobs/${manifestUrl}`;
+                }
+                const manifestRes = await fetch(manifestUrl);
+                if (manifestRes.ok) {
+                  const imageUrls: string[] = await manifestRes.json();
+                  if (imageUrls.length > 0) {
+                    previewImage = imageUrls[0];
+                  }
                 }
               } catch (err) {
                 console.error('Failed to fetch manifest:', err);
@@ -138,11 +146,8 @@ export function Collections() {
               objectId: collectionId,
               name: decodeU8Vector(content.name),
               description: decodeU8Vector(content.description),
-              creator: content.creator as string,
               maxSupply: Number(content.max_supply),
               mintedCount: Number(content.minted_count),
-              royaltyBps: Number(content.royalty_bps),
-              baseUri,
               mintPrice: String(content.mint_price),
               previewImage: previewImage || undefined,
             } as CollectionData;
@@ -168,31 +173,15 @@ export function Collections() {
     fetchCollections();
   }, [account, suiClient, registryId]);
 
-  const copyToClipboard = (id: string) => {
-    navigator.clipboard.writeText(id);
-    setCopiedId(id);
-    setTimeout(() => setCopiedId(null), 2000);
-  };
-
-  const shortenId = (id: string) => {
-    if (!id) return '';
-    return `${id.slice(0, 6)}...${id.slice(-6)}`;
-  };
-
-  const openShareModal = (collection: CollectionData) => {
-    setSelectedCollection(collection);
-    setShareModalOpen(true);
-  };
-
   return (
     <div className="min-h-screen pt-32 pb-20 bg-gradient-to-br from-blue-50 via-white to-cyan-50">
       <div className="max-w-7xl mx-auto px-6">
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
           <h2 className="text-5xl font-bold mb-4 bg-gradient-to-r from-blue-600 to-cyan-600 bg-clip-text text-transparent">
-            My NFT Collections
+            Mint NFTs
           </h2>
           <p className="text-xl text-gray-600 mb-12">
-            Manage and view your created collections
+            Select a collection to mint NFTs
           </p>
 
           {isLoading ? (
@@ -201,7 +190,7 @@ export function Collections() {
             </div>
           ) : collections.length === 0 ? (
             <div className="text-center py-20">
-              <p className="text-gray-500 text-lg mb-4">No collections found.</p>
+              <p className="text-gray-500 text-lg mb-4">You haven't created any collections yet.</p>
               <Link
                 to="/create"
                 className="inline-block bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-6 py-3 rounded-xl font-medium hover:shadow-lg transition-all"
@@ -218,7 +207,7 @@ export function Collections() {
                   animate={{ opacity: 1, y: 0 }}
                   transition={{ delay: index * 0.05 }}
                   whileHover={{ scale: 1.02, y: -5 }}
-                  className="bg-white rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl transition-all border border-gray-200 group"
+                  className="bg-white rounded-2xl overflow-hidden shadow-lg hover:shadow-2xl transition-all border border-gray-200"
                 >
                   {/* Preview Image */}
                   <div className="aspect-square bg-gradient-to-br from-blue-400 to-cyan-400 relative overflow-hidden">
@@ -259,25 +248,6 @@ export function Collections() {
                           {(Number(collection.mintPrice) / 1_000_000_000).toFixed(2)} SUI
                         </span>
                       </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-500">Royalty:</span>
-                        <span className="font-medium">{collection.royaltyBps / 100}%</span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-gray-500">Collection ID:</span>
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono text-xs">
-                            {shortenId(collection.objectId)}
-                          </span>
-                          <button
-                            onClick={() => copyToClipboard(collection.objectId)}
-                            className="text-gray-500 hover:text-gray-900"
-                            title={copiedId === collection.objectId ? 'Copied!' : 'Copy'}
-                          >
-                            <Copy className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </div>
                     </div>
 
                     {/* Progress Bar */}
@@ -292,47 +262,20 @@ export function Collections() {
                       </div>
                     </div>
 
-                    {/* Actions */}
-                    <div className="flex items-center gap-2">
-                      <Link
-                        to={`/mint/${collection.objectId}`}
-                        className="flex-1 bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-4 py-2 rounded-lg font-medium hover:shadow-lg transition-all flex items-center justify-center gap-2"
-                      >
-                        <Eye className="w-4 h-4" />
-                        View & Mint
-                      </Link>
-                      <button
-                        onClick={() => openShareModal(collection)}
-                        className="bg-cyan-100 hover:bg-cyan-200 text-cyan-700 px-4 py-2 rounded-lg transition-all"
-                        title="Share"
-                      >
-                        <Share2 className="w-4 h-4" />
-                      </button>
-                      <a
-                        href={`https://suiscan.xyz/testnet/object/${collection.objectId}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="bg-gray-100 hover:bg-gray-200 text-gray-700 px-4 py-2 rounded-lg transition-all"
-                      >
-                        <ExternalLink className="w-4 h-4" />
-                      </a>
-                    </div>
+                    {/* Mint Button */}
+                    <Link
+                      to={`/mint/${collection.objectId}`}
+                      className="w-full bg-gradient-to-r from-blue-500 to-cyan-500 text-white px-4 py-3 rounded-lg font-medium hover:shadow-lg transition-all flex items-center justify-center gap-2"
+                    >
+                      <Eye className="w-4 h-4" />
+                      View & Mint NFTs
+                    </Link>
                   </div>
                 </motion.div>
               ))}
             </div>
           )}
         </motion.div>
-
-        {/* Share Modal */}
-        {selectedCollection && (
-          <ShareMintModal
-            isOpen={shareModalOpen}
-            onClose={() => setShareModalOpen(false)}
-            collectionId={selectedCollection.objectId}
-            collectionName={selectedCollection.name}
-          />
-        )}
       </div>
     </div>
   );
